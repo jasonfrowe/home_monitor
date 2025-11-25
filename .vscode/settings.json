@@ -1,0 +1,21 @@
+{
+    "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+    "C_Cpp.default.cStandard": "c89",
+    "C_Cpp.default.defines": [
+        "__cdecl__=",
+        "__fastcall__=",
+        "asm(...)=",
+    ],
+    "cmake.showSystemKits": false,
+    "cmake.preferredGenerators": [
+        "Unix Makefiles",
+    ],
+    "cmake.options.advanced": {
+        "launch": {
+            "statusBarVisibility": "hidden",
+        },
+        "debug": {
+            "statusBarVisibility": "hidden",
+        }
+    },
+}
