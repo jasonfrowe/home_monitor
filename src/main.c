@@ -1,10 +1,10 @@
 #include <rp6502.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <fcntl.h>
 #include <time.h>
 #include <stdint.h>
-
 #include <unistd.h>
 
 /* cc65 needs explicit prototype for strstr */
@@ -21,6 +21,8 @@ char *strstr(const char *haystack, const char *needle);
 #define TIMEZONE_OFFSET -5      /* EST = -5, EDT = -4 */
 #define SCREEN_WIDTH     78     /* Adjusted to indents */
 #define MAX_SCREEN_LINES 22     /* Stop printing after this many lines to prevent scrolling */
+#define MAX_FEEDS       10      /* Maximum number of feeds to load */
+#define CONFIG_FILENAME "feeds.txt"
 
 /* --- Keyboard / XRAM Configuration --- */
 #define KEYBOARD_INPUT  0xEC20  // XRAM address for keyboard data
@@ -66,57 +68,105 @@ static int is_entity(const char* p, const char* entity) {
     return strncmp(p, entity, strlen(entity)) == 0;
 }
 
+/* 
+ * Custom sleep function since 'sleep()' is missing in the library 
+ */
+static void wait_seconds(unsigned int sec) {
+    unsigned long start = clock();
+    unsigned long duration = (unsigned long)sec * CLOCKS_PER_SEC;
+    while ((clock() - start) < duration);
+}
+
 /* Feed Configuration Structure */
 typedef struct {
-    int id;
-    const char* name;
-    const char* host;
-    const char* port_str; 
-    const char* path;
-    const char* tag;      /* Tag to search for (<title> vs <description>) */
-    const char* end_tag;  /* Closing tag */
-    int skip_first;       /* Skip the first found tag? (usually channel title) */
+    int type;           /* 0 = Weather Logic, 1 = News Logic */
+    char name[32];
+    char host[64];
+    char port_str[8]; 
+    char path[64];
+    char tag[32];       /* <title> or <description> */
+    char end_tag[32];   /* </title> or </description> */
+    int skip_first;     
 } FeedConfig;
 
-/* Predefined Feeds */
-FeedConfig feed_weather = { 0, "WeatherPi", "weatherpi.home.arpa", "80", "/weewx/rss.xml",       "<description>", "</description>", 0 };
-FeedConfig feed_news    = { 1, "Slashdot",  "rss.slashdot.org",    "80", "/Slashdot/slashdot",   "<title>",       "</title>",       1 };
-FeedConfig feed_cbc = { 
-    2, 
-    "CBCNews",  
-    "datapi.home.arpa",   /* <--- REPLACE WITH YOUR COMPUTER'S IP */
-    "8080",           /* <--- REPLACE WITH 8080 */
-    "/cbc",           /* <--- Matches the key in python script */
-    "<title>", 
-    "</title>", 
-    1 
-};
-
-FeedConfig feed_bbc = { 
-    3, 
-    "BBC News",  
-    "datapi.home.arpa",   /* <--- REPLACE WITH YOUR COMPUTER'S IP */
-    "8080",           /* <--- REPLACE WITH 8080 */
-    "/bbc",           /* <--- Matches the key in python script */
-    "<title>", 
-    "</title>", 
-    1 
-};
-
-// Sherbrooke Weather Feed
-FeedConfig feed_sher = { 
-    4, 
-    "Sherbrooke Weather",  
-    "datapi.home.arpa",   /* <--- REPLACE WITH YOUR COMPUTER'S IP */
-    "8080",           /* <--- REPLACE WITH 8080 */
-    "/wea",           /* <--- Matches the key in python script */
-    "<title>", 
-    "</title>", 
-    1 
-};
-
-/* Current Selection (Default to Weather) */
+/* Global Feed Storage */
+FeedConfig feeds[MAX_FEEDS];
+int feed_count = 0;
 FeedConfig current_feed;
+
+/* 
+ * Load Config from File
+ * Format: Type|Name|Host|Port|Path|Tag|EndTag|SkipFirst
+ */
+static void load_config(void) {
+    FILE *fp;
+    char *token;
+    int i = 0;
+
+    fp = fopen(CONFIG_FILENAME, "r");
+    if (fp == NULL) {
+        printf(ANSI_RED "Error: Could not open %s\n" ANSI_RESET, CONFIG_FILENAME);
+        printf("Using defaults...\n");
+        /* Fallback Default */
+        feeds[0].type = 1;
+        strcpy(feeds[0].name, "Slashdot (Default)");
+        strcpy(feeds[0].host, "rss.slashdot.org");
+        strcpy(feeds[0].port_str, "80");
+        strcpy(feeds[0].path, "/Slashdot/slashdot");
+        strcpy(feeds[0].tag, "<title>");
+        strcpy(feeds[0].end_tag, "</title>");
+        feeds[0].skip_first = 1;
+        feed_count = 1;
+        
+        /* CHANGED: sleep(2) -> wait_seconds(2) */
+        wait_seconds(2);
+        return;
+    }
+
+    printf("Loading feeds...\n");
+    while (fgets(g_temp_line, sizeof(g_temp_line), fp) != NULL) {
+        /* Skip comments or empty lines */
+        if (g_temp_line[0] == '#' || g_temp_line[0] == '\n' || strlen(g_temp_line) < 5) continue;
+        
+        if (feed_count >= MAX_FEEDS) break;
+        
+        /* Remove trailing newline */
+        g_temp_line[strcspn(g_temp_line, "\r\n")] = 0;
+
+        /* Parse Tokens (Pipe Separated) */
+        token = strtok(g_temp_line, "|");
+        if (!token) continue;
+        feeds[feed_count].type = atoi(token);
+
+        token = strtok(NULL, "|"); if (!token) continue;
+        strncpy(feeds[feed_count].name, token, 31);
+
+        token = strtok(NULL, "|"); if (!token) continue;
+        strncpy(feeds[feed_count].host, token, 63);
+
+        token = strtok(NULL, "|"); if (!token) continue;
+        strncpy(feeds[feed_count].port_str, token, 7);
+
+        token = strtok(NULL, "|"); if (!token) continue;
+        strncpy(feeds[feed_count].path, token, 63);
+
+        token = strtok(NULL, "|"); if (!token) continue;
+        strncpy(feeds[feed_count].tag, token, 31);
+
+        token = strtok(NULL, "|"); if (!token) continue;
+        strncpy(feeds[feed_count].end_tag, token, 31);
+
+        token = strtok(NULL, "|"); if (!token) continue;
+        feeds[feed_count].skip_first = atoi(token);
+
+        printf("Loaded: %s\n", feeds[feed_count].name);
+        feed_count++;
+    }
+    fclose(fp);
+    
+    /* CHANGED: sleep(1) -> wait_seconds(1) */
+    wait_seconds(1);
+}
 
 /* 
  * Calculate the visual length of the next word in the buffer 
@@ -369,7 +419,7 @@ static int fetch_data(void) {
     int block_count = 0;
     int items_found = 0; 
     int tag_len, end_tag_len;
-    int total_lines_printed = 4; /* Header takes ~4 lines */
+    int total_lines_printed = 4;
     
     time_t now;
     struct tm *t;
@@ -450,40 +500,30 @@ static int fetch_data(void) {
 
         tag_start = strstr(g_buffer + pos, current_feed.tag);
         if (!tag_start) break;
-        
         tag_start += tag_len; 
         tag_end = strstr(tag_start, current_feed.end_tag);
         if (!tag_end) break;
-        
         *tag_end = '\0'; 
         
         if (current_feed.skip_first && items_found == 0) {
             pos = (int)(tag_end - g_buffer) + end_tag_len;
-            items_found++; 
-            continue;
+            items_found++; continue;
         }
 
         /* Weather Logic */
-        if (current_feed.id == 0) {
-            if (strstr(tag_start, "summaries") != NULL ||
-                strstr(tag_start, "total for month") != NULL || 
-                strstr(tag_start, "total for year") != NULL) {
-                pos = (int)(tag_end - g_buffer) + end_tag_len;
-                continue;
+        if (current_feed.type == 0) {
+            if (strstr(tag_start, "summaries") != NULL || strstr(tag_start, "total for month") != NULL || strstr(tag_start, "total for year") != NULL) {
+                pos = (int)(tag_end - g_buffer) + end_tag_len; continue;
             }
             if (block_count == 0) { printf(ANSI_YELLOW "CURRENT CONDITIONS:\n" ANSI_RESET); total_lines_printed++; }
             else if (block_count == 1) { printf(ANSI_YELLOW "\nDAILY SUMMARY:\n" ANSI_RESET); total_lines_printed+=2; }
-            
-            /* Weather indent 0, ; is newline */
             print_pretty_line(tag_start, tag_end, 2000, ANSI_CYAN, &total_lines_printed, 0, 1); 
         } 
         /* News Logic */
         else {
             printf(ANSI_YELLOW "* ");
-            /* Title: Indent 2, No semicolons */
-            print_pretty_line(tag_start, tag_end, 2000, ANSI_CYAN, &total_lines_printed, 2, 0);
+            print_pretty_line(tag_start, tag_end, 2000, ANSI_YELLOW, &total_lines_printed, 2, 0);
 
-            /* Description */
             {
                 char *desc_start = strstr(tag_end + 1, "<description>");
                 if (desc_start && (desc_start - tag_end < 500)) {
@@ -492,8 +532,7 @@ static int fetch_data(void) {
                         *desc_end = '\0';
                         if (total_lines_printed < MAX_SCREEN_LINES) {
                             printf("  "); 
-                            /* Description: Indent 2, Cyan, Max 250 chars */
-                            print_pretty_line(desc_start + 13, desc_end, 250, ANSI_WHITE, &total_lines_printed, 2, 0); 
+                            print_pretty_line(desc_start + 13, desc_end, 250, ANSI_CYAN, &total_lines_printed, 2, 0); 
                         }
                         *desc_end = '<'; 
                     }
@@ -501,21 +540,12 @@ static int fetch_data(void) {
             }
         }
         
-        if (current_feed.id != 0) {
-            printf("\n");
-            total_lines_printed++;
-        }
-        
-        block_count++;
-        items_found++;
-        
+        if (current_feed.type != 0) { printf("\n"); total_lines_printed++; }
+        block_count++; items_found++;
         pos = (int)(tag_end - g_buffer) + end_tag_len;
     }
 
-    if (items_found == 0) {
-        printf(ANSI_RED "No RSS items found.\n" ANSI_RESET);
-    }
-
+    if (items_found == 0) printf(ANSI_RED "No RSS items found.\n" ANSI_RESET);
     return 1;
 }
 
@@ -525,44 +555,46 @@ void main(void) {
     unsigned long next_update_ticks = UPDATE_INTERVAL_MIN * TICKS_PER_MIN;
     int running = 1;
     int force_reload = 0;
-
-    /* 
-     * CYCLE CONFIGURATION
-     * 1. Define the rotation order in this array.
-     * 2. Track the current index (0 to 4).
-     */
-    FeedConfig* rotation[] = { &feed_news, &feed_weather, &feed_cbc, &feed_bbc, &feed_sher };
-    int rotation_len = 5;
     int current_idx = 0;
+    int i;
 
-    /* Initialize with the first feed */
-    current_feed = *rotation[current_idx];
-
-    /* Enable keyboard input (Corrected 'xregn' to 'xreg') */
+    /* Initialize Keyboard */
     xreg(0, 0, 0, KEYBOARD_INPUT);
 
     printf(ANSI_CLS);
-    printf("Initializing Monitor...\n\n");
+    
+    /* Load Config from feeds.txt */
+    load_config();
+    if (feed_count == 0) {
+        printf("No feeds loaded. Exiting.\n");
+        return;
+    }
+    
+    /* Start with first feed */
+    current_idx = 0;
+    current_feed = feeds[current_idx];
 
     while (running) {
         fetch_data();
 
         printf(ANSI_YELLOW "\nNext update in %d minutes.\n", UPDATE_INTERVAL_MIN);
-        printf("[1] Slashdot [2] Weewx [3] CBC [4] BBC [5] Sherbrooke Weather [ESC] Exit\n" ANSI_RESET);
+        
+        /* Dynamic Menu based on loaded feeds */
+        for(i=0; i<feed_count && i<9; i++) {
+            printf("[%d] %s  ", i+1, feeds[i].name);
+            if ((i+1)%4 == 0) printf("\n");
+        }
+        printf("[ESC] Exit\n" ANSI_RESET);
 
         timer_start = clock();
         force_reload = 0;
 
-        /* Wait Loop */
         while ((clock() - timer_start) < next_update_ticks) {
-            uint8_t i;
+            uint8_t k;
             RIA.addr0 = KEYBOARD_INPUT;
             RIA.step0 = 1;
-            for (i = 0; i < KEYBOARD_BYTES; i++) {
-                keystates[i] = RIA.rw0;
-            }
+            for (k = 0; k < KEYBOARD_BYTES; k++) keystates[k] = RIA.rw0;
 
-            /* ESC: Exit Program */
             if (key(KEY_ESC)) {
                 printf("Exiting ...\n");
                 xreg(0, 0, 0, 0xFFFF); 
@@ -570,49 +602,28 @@ void main(void) {
                 break;
             }
 
-            /* Manual Selection Logic 
-             * If a key is pressed, update 'current_idx' to match that feed 
-             * so the cycle continues naturally from there.
-             */
-            if (key(KEY_1) && current_feed.id != feed_news.id) {
-                current_idx = 0; 
-                force_reload = 1;
-            }
-            if (key(KEY_2) && current_feed.id != feed_weather.id) {
-                current_idx = 1; 
-                force_reload = 1;
-            }
-            if (key(KEY_3) && current_feed.id != feed_cbc.id) {
-                current_idx = 2; 
-                force_reload = 1;
-            }
-            if (key(KEY_4) && current_feed.id != feed_bbc.id) {
-                current_idx = 3; 
-                force_reload = 1;
-            }
-            if (key(KEY_5) && current_feed.id != feed_sher.id) {
-                current_idx = 4; 
-                force_reload = 1;
+            /* Dynamic Key Checking: Keys 1..9 map to feeds 0..8 */
+            /* HID Codes: 1=0x1E, 2=0x1F, 3=0x20 ... 9=0x26 */
+            for(i=0; i<feed_count && i<9; i++) {
+                if (key(0x1E + i)) {
+                    if (current_idx != i) { // Note: 'id' in struct isn't strictly used now, we use index
+                        current_idx = i;
+                        current_feed = feeds[current_idx];
+                        printf("\nSwitching to %s...\n", current_feed.name);
+                        force_reload = 1;
+                        break;
+                    }
+                }
             }
             
-            if (force_reload) {
-                printf("\nSwitching...\n");
-                current_feed = *rotation[current_idx];
-                break; /* Break inner loop to fetch data immediately */
-            }
+            if (force_reload) break;
         }
-        
-        /* 
-         * AUTO-CYCLE LOGIC
-         * If the loop finished naturally (timeout) and we are still running:
-         * Move to the next feed in the array.
-         */
+
+        /* Auto-Cycle Logic */
         if (running && !force_reload) {
             current_idx++;
-            if (current_idx >= rotation_len) {
-                current_idx = 0;
-            }
-            current_feed = *rotation[current_idx];
+            if (current_idx >= feed_count) current_idx = 0;
+            current_feed = feeds[current_idx];
         }
     }
 }

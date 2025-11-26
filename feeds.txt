@@ -1,0 +1,6 @@
+# Type|Name|Host|Port|Path|StartTag|EndTag|SkipFirst
+0|Weewx|weatherpi.home.arpa|80|/weewx/rss.xml|<description>|</description>|0
+1|Slashdot|rss.slashdot.org|80|/Slashdot/slashdot|<title>|</title>|1
+1|CBC News|datapi.home.arpa|8080|/cbc|<title>|</title>|1
+1|BBC News|datapi.home.arpa|8080|/bbc|<title>|</title>|1
+1|Sherbrooke Weather|datapi.home.arpa|8080|/wea|<title>|</title>|1
