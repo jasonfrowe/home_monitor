@@ -156,6 +156,9 @@ static int fetch_data(void) {
     int line_len;
     char ch;
     int block_count = 0;
+    time_t now;
+    struct tm *t;
+    char time_str[40];
 
     fd = open("AT:", O_RDWR);
     if (fd < 0) {
@@ -201,8 +204,16 @@ static int fetch_data(void) {
     g_buffer[bytes_read] = '\0';
     close(fd);
 
+    /* --- CAPTURE & FORMAT TIME --- */
+    now = time(NULL);
+    t = localtime(&now);
+    /* Format: "Nov 25 22:30" */
+    strftime(time_str, sizeof(time_str), "%b %d %H:%M", t);
+    /* ----------------------------- */
+
     printf(ANSI_CLS);
-    printf(ANSI_GREEN "WeatherPi Monitor" ANSI_RESET " (Last update: Now)\n");
+    // printf(ANSI_GREEN "WeatherPi Monitor" ANSI_RESET " (Last update: Now)\n");
+    printf(ANSI_GREEN "WeatherPi Monitor" ANSI_RESET " (Last update: %s)\n", time_str);
     printf("----------------------------------------\n\n");
 
     pos = 0;
