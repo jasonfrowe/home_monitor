@@ -94,24 +94,6 @@ This produces `build/homemonitor.rp6502` ready to run on your RP6502.
    - Scans for specific tags (`<description>` for weather, `<title>` for news).
    - Filters out unwanted metadata (e.g., channel descriptions).
    - Decodes HTML entities (like `&#176;` for degrees).
-6. **Input Handling**: Maps the USB HID keyboard state to XRAM address `0x8000`. The program directly reads the RIA hardware registers to detect key presses without blocking the update timer.
-
-## Customization
-
-To add or modify feeds, edit the `FeedConfig` structures in `src/main.c`:
-
-```c
-FeedConfig feed_custom = { 
-    2,                  /* ID */
-    "My Feed",          /* Display Name */
-    "example.com",      /* Host */
-    "80",               /* Port */
-    "/rss.xml",         /* Path */
-    "<title>",          /* Start Tag */
-    "</title>",         /* End Tag */
-    1                   /* Skip first item? (1=Yes) */
-};
-```
 
 ## Technical Details
 
