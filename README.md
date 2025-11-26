@@ -1,19 +1,22 @@
-# Weather Monitor - RSS Feed Reader
+# Home Monitor - RSS Feed Reader
 
-This program fetches and displays current weather conditions from a WeeWX weather station RSS feed on your local network using the RP6502 Picocomputer.
+This program fetches and displays RSS feeds on your RP6502 Picocomputer. It currently supports a local WeeWX weather station and the Slashdot news feed.
 
-
-![Weather Monitor Screenshot](images/Screenshot.png)
+![RP6502 Monitor Screenshot](images/Screenshot.png)
 
 It functions as a "Dashboard," automatically refreshing every 5 minutes and formatting the output with ANSI colors for readability.
 
 ## Features
 
-- **Network Access**: Connects to WeeWX weather station via the RP6502 `AT:` modem emulator (WiFi).
-- **Dashboard Display**: Parses RSS data to display only "Current Conditions" and "Daily Summary".
+- **Multi-Feed Support**: Switch between local weather and internet news feeds instantly.
+- **Network Access**: Connects via the RP6502 `AT:` modem emulator (WiFi).
+- **Dashboard Display**: Parses RSS data to display organized summaries (Weather Conditions vs News Headlines).
 - **ANSI Graphics**: Formats output with colors (Cyan, Yellow, Green, White) and decodes HTML entities (e.g., degree symbols).
-- **Auto-Refresh**: Updates weather data automatically every 5 minutes.
-- **Keyboard Control**: Uses direct RIA hardware access to scan the USB keyboard; press **ESC** to exit the loop immediately.
+- **Auto-Refresh**: Updates data automatically every 5 minutes.
+- **Keyboard Control**: Uses direct RIA hardware access for non-blocking input:
+  - **[1]**: Switch to News
+  - **[2]**: Switch to Weather
+  - **[ESC]**: Exit program
 
 ## Prerequisites
 
@@ -57,40 +60,41 @@ This produces `build/homemonitor.rp6502` ready to run on your RP6502.
    load homemonitor.rp6502  
    reset  
    ```
-3. To exit the program, press **ESC**.
 
 ## How It Works
 
 1. **Modem Initialization**: Opens the `AT:` device and resets the modem emulator (`ATZ`, `ATE0`).
-2. **TCP Connection**: Uses the Hayes command `ATDweatherpi.home.arpa:80` to open a raw TCP stream to the server.
-3. **HTTP Request**: Sends a `GET /weewx/rss.xml HTTP/1.1` request with `Connection: close`.
-4. **Data Retrieval**: Reads data from the RP6502 XSTACK. Since the XSTACK is LIFO (Last-In, First-Out), data is popped into a large global buffer (8KB) to reconstruct the stream.
+2. **TCP Connection**: Uses the Hayes command `ATDhostname:port` to open a raw TCP stream to the server.
+3. **HTTP Request**: Sends a `GET` request with `Connection: close`.
+4. **Data Retrieval**: Uses the standard library `read()` function (Kernel Block Read) to pull data into a 16KB global buffer. This is significantly faster than stack-based operations.
 5. **Parsing & Filtering**:
-   - Scans for `<description>` tags.
-   - Filters out RSS channel titles and Monthly/Yearly summaries to reduce clutter.
+   - Scans for specific tags (`<description>` for weather, `<title>` for news).
+   - Filters out unwanted metadata (e.g., channel descriptions).
    - Decodes HTML entities (like `&#176;` for degrees).
-6. **Input Handling**: Maps the USB HID keyboard state to XRAM address `0xEC20`. The program directly reads the RIA hardware registers to detect the `ESC` key without blocking the update timer.
+6. **Input Handling**: Maps the USB HID keyboard state to XRAM address `0x8000`. The program directly reads the RIA hardware registers to detect key presses without blocking the update timer.
 
 ## Customization
 
-To fetch from a different RSS feed, modify these lines in `src/main.c`:
+To add or modify feeds, edit the `FeedConfig` structures in `src/main.c`:
 
 ```c
-/* Change the hostname/IP */
-modem_send(fd, "ATD192.168.1.50:80\r\n");
-
-/* Change the URL path */
-modem_send(fd, "GET /feed.rss HTTP/1.1\r\n");
-
-/* Change the Host header */
-modem_send(fd, "Host: 192.168.1.50\r\n");
+FeedConfig feed_custom = { 
+    2,                  /* ID */
+    "My Feed",          /* Display Name */
+    "example.com",      /* Host */
+    "80",               /* Port */
+    "/rss.xml",         /* Path */
+    "<title>",          /* Start Tag */
+    "</title>",         /* End Tag */
+    1                   /* Skip first item? (1=Yes) */
+};
 ```
 
 ## Technical Details
 
-- **Memory Management**: Uses an 8KB global buffer (`BUFFER_SIZE`) to ensure full HTTP headers and XML bodies are captured. This is allocated globally to avoid overflowing the 256-byte local stack limit.
-- **Keyboard Mapping**: The keyboard state is mapped to XRAM address **0xEC20**.
-  - *Note:* Do not change this to low memory (e.g., `0x1000`) or high memory (`0xFF00`) without checking for collisions with Video RAM or the System Stack.
+- **Memory Management**: Uses a **16KB global buffer** (`BUFFER_SIZE`) to ensure full HTTP headers and RSS bodies are captured (Slashdot headers are large).
+- **Keyboard Mapping**: The keyboard state is mapped to XRAM address **0x8000**.
+  - *Note:* This address is chosen to avoid collisions with Video RAM (low memory) and the System Stack (high memory).
 - **ANSI Codes**: The program uses standard ANSI escape codes for screen clearing (`\x1b[2J`) and text coloring.
 
 ## Troubleshooting
@@ -100,15 +104,17 @@ modem_send(fd, "Host: 192.168.1.50\r\n");
 - Verify WiFi is configured (`STATUS`).
 
 ### "Connection Failed" / "NO CARRIER"
-- Verify `weatherpi.home.arpa` is reachable from your network.
-- Try using an IP address instead of a hostname in the `ATD` command.
+- Verify the hostname is reachable.
+- Try using an IP address instead of a hostname.
 - Ensure the server is listening on port 80.
+- **Note:** This program does not support HTTPS (SSL). It requires plain HTTP feeds.
 
 ### Screen shows "Happy Faces" or Garbage
-- This indicates a memory collision. The keyboard XRAM address is likely overwriting Video Memory. Ensure `KEYBOARD_INPUT` is set to a safe address like `0xEC20` or `0x8000`.
+- This indicates a memory collision. The keyboard XRAM address is likely overwriting Video Memory. Ensure `KEYBOARD_INPUT` is set to a safe address like `0x8000`.
 
 ## References
 
 - [RP6502-RIA-W Documentation](https://picocomputer.github.io/ria_w.html)
 - [RP6502-OS Documentation](https://picocomputer.github.io/os.html)
 - [WeeWX Weather Software](https://weewx.com/)
+```
