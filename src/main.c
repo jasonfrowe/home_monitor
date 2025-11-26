@@ -19,7 +19,7 @@ char *strstr(const char *haystack, const char *needle);
 #define UPDATE_INTERVAL_MIN 5
 #define TICKS_PER_MIN (60UL * CLOCKS_PER_SEC) 
 #define TIMEZONE_OFFSET -5      /* EST = -5, EDT = -4 */
-#define SCREEN_WIDTH    80
+#define SCREEN_WIDTH     78     /* Adjusted to indents */
 #define MAX_SCREEN_LINES 22     /* Stop printing after this many lines to prevent scrolling */
 
 /* --- Keyboard / XRAM Configuration --- */
@@ -29,6 +29,9 @@ char *strstr(const char *haystack, const char *needle);
 #define KEY_ENTER       0x28    
 #define KEY_1           0x1E    /* '1' on main row */
 #define KEY_2           0x1F    /* '2' on main row */
+#define KEY_3           0x20    /* '3' on main row */
+#define KEY_4           0x21    /* '4' on main row */
+#define KEY_5           0x22    /* '5' on main row */
 
 // Macro to check if a key is pressed
 #define key(code) (keystates[code >> 3] & (1 << (code & 7)))
@@ -76,11 +79,41 @@ typedef struct {
 } FeedConfig;
 
 /* Predefined Feeds */
-// FeedConfig feed_weather = { 0, "WeatherPi", "weatherpi.home.arpa", "80", "/weewx/rss.xml" };
-// // FeedConfig feed_cbc     = { 1, "CBC News",  "www.cbc.ca",          "80", "/webfeed/rss/rss-topstories" };
-// FeedConfig feed_news    = { 1, "Slashdot",  "rss.slashdot.org",    "80", "/Slashdot/slashdot" };
 FeedConfig feed_weather = { 0, "WeatherPi", "weatherpi.home.arpa", "80", "/weewx/rss.xml",       "<description>", "</description>", 0 };
 FeedConfig feed_news    = { 1, "Slashdot",  "rss.slashdot.org",    "80", "/Slashdot/slashdot",   "<title>",       "</title>",       1 };
+FeedConfig feed_cbc = { 
+    2, 
+    "CBCNews",  
+    "datapi.home.arpa",   /* <--- REPLACE WITH YOUR COMPUTER'S IP */
+    "8080",           /* <--- REPLACE WITH 8080 */
+    "/cbc",           /* <--- Matches the key in python script */
+    "<title>", 
+    "</title>", 
+    1 
+};
+
+FeedConfig feed_bbc = { 
+    3, 
+    "BBC News",  
+    "datapi.home.arpa",   /* <--- REPLACE WITH YOUR COMPUTER'S IP */
+    "8080",           /* <--- REPLACE WITH 8080 */
+    "/bbc",           /* <--- Matches the key in python script */
+    "<title>", 
+    "</title>", 
+    1 
+};
+
+// Sherbrooke Weather Feed
+FeedConfig feed_sher = { 
+    4, 
+    "Sherbrooke Weather",  
+    "datapi.home.arpa",   /* <--- REPLACE WITH YOUR COMPUTER'S IP */
+    "8080",           /* <--- REPLACE WITH 8080 */
+    "/wea",           /* <--- Matches the key in python script */
+    "<title>", 
+    "</title>", 
+    1 
+};
 
 /* Current Selection (Default to Weather) */
 FeedConfig current_feed;
@@ -97,10 +130,36 @@ static int get_next_word_len(const char* p, const char* end) {
     while (t < end) {
         /* Stop at space (word boundary) unless inside a tag */
         if (!in_tag && (*t == ' ' || *t == '\n' || *t == '\r' || *t == '\t')) break;
+
+        /* Skip CDATA markers in length calculation */
+        if (strncmp(t, "<!--", 4) == 0) { in_tag = 1; t+=4; continue; } 
+        if (strncmp(t, "<![CDATA[", 9) == 0) { t += 9; continue; }
+        if (strncmp(t, "]]>", 3) == 0) { t += 3; continue; }
         
         if (*t == '<') { in_tag = 1; t++; continue; }
         if (*t == '>') { in_tag = 0; t++; continue; }
         if (in_tag) { t++; continue; }
+
+        /* Handle Degree Symbol (UTF-8: 0xC2 0xB0) */
+        if ((unsigned char)*t == 0xC2 && (unsigned char)*(t+1) == 0xB0) {
+            len += 5; /* " deg " */
+            t += 2; 
+            continue;
+        }
+
+        /* Handle UTF-8 Characters (Visual length = 1) */
+        /* Check for 0xE2 marker (common for symbols) */
+        if ((unsigned char)*t == 0xE2) {
+             /* Em Dash (—) or En Dash (–) */
+             if (strncmp(t, "\xE2\x80\x94", 3) == 0 || strncmp(t, "\xE2\x80\x93", 3) == 0) {
+                 len += 1; t += 3; continue;
+             }
+             /* Smart Quotes (“ ” ‘ ’) */
+             if (strncmp(t, "\xE2\x80\x9C", 3) == 0 || strncmp(t, "\xE2\x80\x9D", 3) == 0 ||
+                 strncmp(t, "\xE2\x80\x98", 3) == 0 || strncmp(t, "\xE2\x80\x99", 3) == 0) {
+                 len += 1; t += 3; continue;
+             }
+        }
         
         if (*t == '&') {
             if (is_entity(t, "&#176;")) { len += 5; t += 6; continue; } /* " deg " */
@@ -140,6 +199,16 @@ static void print_pretty_line(const char* start, const char* end, int max_chars,
             break;
         }
 
+        /* --- Handle CDATA explicitly BEFORE generic tags --- */
+        if (strncmp(p, "<![CDATA[", 9) == 0) {
+            p += 9;
+            continue;
+        }
+        if (strncmp(p, "]]>", 3) == 0) {
+            p += 3;
+            continue;
+        }
+
         /* Handle Tags (Invisible) */
         if (*p == '<') { in_tag = 1; p++; continue; }
         if (*p == '>') { in_tag = 0; p++; continue; }
@@ -175,6 +244,33 @@ static void print_pretty_line(const char* start, const char* end, int max_chars,
         /* Print the word characters */
         while (p < end && !(*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) {
              if (*p == '<') { /* Tag start mid-word? stop word processing to let main loop handle tag */ break; }
+
+             /* Stop printing if we hit the end of CDATA */
+             if (strncmp(p, "]]>", 3) == 0) break;
+             /* Also stop if we hit a standard tag */
+             if (*p == '<') break;
+
+             /* Handle Degree Symbol (UTF-8: 0xC2 0xB0) */
+             if ((unsigned char)*p == 0xC2 && (unsigned char)*(p+1) == 0xB0) {
+                 printf(ANSI_YELLOW " deg %s", color);
+                 if (is_value) printf(ANSI_BOLD ANSI_WHITE);
+                 p += 2; col += 5; chars_printed++; continue;
+             }
+
+             /* UTF-8 Replacements */
+             if ((unsigned char)*p == 0xE2) {
+                 /* Em Dash (—) or En Dash (–) -> hyphen */
+                 if (strncmp(p, "\xE2\x80\x94", 3) == 0 || strncmp(p, "\xE2\x80\x93", 3) == 0) {
+                     putchar('-'); p += 3; col++; chars_printed++; continue;
+                 }
+                 /* Smart Quotes -> " or ' */
+                 if (strncmp(p, "\xE2\x80\x9C", 3) == 0 || strncmp(p, "\xE2\x80\x9D", 3) == 0) {
+                     putchar('"'); p += 3; col++; chars_printed++; continue;
+                 }
+                 if (strncmp(p, "\xE2\x80\x98", 3) == 0 || strncmp(p, "\xE2\x80\x99", 3) == 0) {
+                     putchar('\''); p += 3; col++; chars_printed++; continue;
+                 }
+             }
              
              /* Entities */
              if (*p == '&') {
@@ -430,11 +526,20 @@ void main(void) {
     int running = 1;
     int force_reload = 0;
 
-    /* Initialize: Default to Weather */
-    current_feed = feed_news;
+    /* 
+     * CYCLE CONFIGURATION
+     * 1. Define the rotation order in this array.
+     * 2. Track the current index (0 to 4).
+     */
+    FeedConfig* rotation[] = { &feed_news, &feed_weather, &feed_cbc, &feed_bbc, &feed_sher };
+    int rotation_len = 5;
+    int current_idx = 0;
 
-    // Enable keyboard input
-    xregn(0, 0, 0, 1, KEYBOARD_INPUT);
+    /* Initialize with the first feed */
+    current_feed = *rotation[current_idx];
+
+    /* Enable keyboard input (Corrected 'xregn' to 'xreg') */
+    xreg(0, 0, 0, KEYBOARD_INPUT);
 
     printf(ANSI_CLS);
     printf("Initializing Monitor...\n\n");
@@ -443,13 +548,13 @@ void main(void) {
         fetch_data();
 
         printf(ANSI_YELLOW "\nNext update in %d minutes.\n", UPDATE_INTERVAL_MIN);
-        printf("[1] Slashdot News [2] Weewx Weather [ESC] Exit\n" ANSI_RESET);
+        printf("[1] Slashdot [2] Weewx [3] CBC [4] BBC [5] Sherbrooke Weather [ESC] Exit\n" ANSI_RESET);
 
         timer_start = clock();
         force_reload = 0;
 
+        /* Wait Loop */
         while ((clock() - timer_start) < next_update_ticks) {
-            // Read all keyboard state bytes
             uint8_t i;
             RIA.addr0 = KEYBOARD_INPUT;
             RIA.step0 = 1;
@@ -457,32 +562,57 @@ void main(void) {
                 keystates[i] = RIA.rw0;
             }
 
-            // Check for ESC key to exit
+            /* ESC: Exit Program */
             if (key(KEY_ESC)) {
                 printf("Exiting ...\n");
+                xreg(0, 0, 0, 0xFFFF); 
                 running = 0;
                 break;
             }
 
-            /* Feed Selection Logic */
-            if (key(KEY_1)) {
-                if (current_feed.id != 1) {
-                    current_feed = feed_news;
-                    printf("\nSwitching to News...\n");
-                    force_reload = 1;
-                }
+            /* Manual Selection Logic 
+             * If a key is pressed, update 'current_idx' to match that feed 
+             * so the cycle continues naturally from there.
+             */
+            if (key(KEY_1) && current_feed.id != feed_news.id) {
+                current_idx = 0; 
+                force_reload = 1;
             }
-            if (key(KEY_2)) {
-                if (current_feed.id != 0) {
-                    current_feed = feed_weather;
-                    printf("\nSwitching to Weather...\n");
-                    force_reload = 1;
-                }
+            if (key(KEY_2) && current_feed.id != feed_weather.id) {
+                current_idx = 1; 
+                force_reload = 1;
+            }
+            if (key(KEY_3) && current_feed.id != feed_cbc.id) {
+                current_idx = 2; 
+                force_reload = 1;
+            }
+            if (key(KEY_4) && current_feed.id != feed_bbc.id) {
+                current_idx = 3; 
+                force_reload = 1;
+            }
+            if (key(KEY_5) && current_feed.id != feed_sher.id) {
+                current_idx = 4; 
+                force_reload = 1;
             }
             
-            if (force_reload) break;
-
-
+            if (force_reload) {
+                printf("\nSwitching...\n");
+                current_feed = *rotation[current_idx];
+                break; /* Break inner loop to fetch data immediately */
+            }
+        }
+        
+        /* 
+         * AUTO-CYCLE LOGIC
+         * If the loop finished naturally (timeout) and we are still running:
+         * Move to the next feed in the array.
+         */
+        if (running && !force_reload) {
+            current_idx++;
+            if (current_idx >= rotation_len) {
+                current_idx = 0;
+            }
+            current_feed = *rotation[current_idx];
         }
     }
 }
