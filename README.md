@@ -1,6 +1,6 @@
 # Home Monitor - RSS Feed Reader
 
-This program fetches and displays RSS feeds on your RP6502 Picocomputer. It currently supports a local WeeWX weather station and the Slashdot news feed.
+This program fetches and displays RSS feeds on your RP6502 Picocomputer. It currently supports a local WeeWX weather station and the SlashdotThis program fetches and displays RSS feeds on your RP6502 Picocomputer. It supports local weather stations (WeeWX) and internet news feeds via a lightweight proxy.
 
 ![RP6502 Monitor Screenshot](images/Screenshot.png)
 
@@ -8,40 +8,62 @@ It functions as a "Dashboard," automatically refreshing every 5 minutes and form
 
 ## Features
 
-- **Multi-Feed Support**: Switch between local weather and internet news feeds instantly.
-- **Network Access**: Connects via the RP6502 `AT:` modem emulator (WiFi).
+- **Configurable Feeds**: Load up to 10 different feeds via a text file on the USB drive.
+- **HTTPS Support**: Access secure feeds (CBC, BBC, etc.) using the included Python proxy.
 - **Dashboard Display**: Parses RSS data to display organized summaries (Weather Conditions vs News Headlines).
 - **ANSI Graphics**: Formats output with colors (Cyan, Yellow, Green, White) and decodes HTML entities (e.g., degree symbols).
 - **Auto-Refresh**: Updates data automatically every 5 minutes.
-- **Keyboard Control**: Uses direct RIA hardware access for non-blocking input:
-  - **[1]**: Switch to News
-  - **[2]**: Switch to Weather
-  - **[ESC]**: Exit program
+- **Keyboard Control**: 
+  - **[1-9]**: Switch between loaded feeds.
+  - **[ESC]**: Exit program.
 
 ## Prerequisites
 
-### WiFi Configuration
-
+### 1. WiFi Configuration
 Before running this program, you need to configure WiFi on your RP6502-RIA-W:
 
-1. From the RP6502 monitor console, configure your WiFi network:
-   ```
-   SET SSID your_network_name
-   SET PASS your_network_password
-   SET RF 1
-   ```
+```text
+SET SSID your_network_name
+SET PASS your_network_password
+SET RF 1
+STATUS
+```
 
-2. Verify WiFi is connected:
-   ```
-   STATUS
-   ```
-   You should see WiFi connected and an IP address assigned.
+### 2. HTTPS Proxy (Required for News Feeds)
+The RP6502 cannot directly connect to HTTPS (SSL) websites. To access feeds like CBC or BBC, you must run a lightweight Python script on a computer or Raspberry Pi on your local network.
 
-### Build Environment
+*   **Script:** `rss_proxy.py` (included in this repo).
+*   **Installation:** See **[rss_proxy.md](rss_proxy.md)** for instructions on setting this up as a background service.
 
-- **CMake**: Build system.
-- **cc65**: 6502 Cross Compiler.
-- **RP6502 SDK**: Libraries for the target platform.
+## Configuration (`feeds.txt`)
+
+You must create a file named `feeds.txt` and place it on your USB drive in the same folder as the program.
+
+**Format:** Pipe-separated values (`|`).
+```text
+Type|Name|Host|Port|Path|StartTag|EndTag|SkipFirst
+```
+
+**Column Definitions:**
+1.  **Type**: `0` for Weather (special formatting), `1` for News (List view).
+2.  **Name**: Display name for the header.
+3.  **Host**: The hostname or IP address.
+4.  **Port**: `80` for HTTP, `8080` (or custom) for your Python Proxy.
+5.  **Path**: URL path to the RSS feed.
+6.  **StartTag**: XML tag to find (usually `<description>` for weather, `<title>` for news).
+7.  **EndTag**: Closing XML tag.
+8.  **SkipFirst**: `1` to skip the first item (usually the Channel Title), `0` to keep it.
+
+**Example `feeds.txt`:**
+```text
+# Weather (Local HTTP)
+0|Weewx|weatherpi.home.arpa|80|/weewx/rss.xml|<description>|</description>|0
+# News (Direct HTTP)
+1|Slashdot|rss.slashdot.org|80|/Slashdot/slashdot|<title>|</title>|1
+# News (Via Python Proxy)
+1|CBC News|192.168.1.50|8080|/cbc|<title>|</title>|1
+1|BBC News|192.168.1.50|8080|/bbc|<title>|</title>|1
+```
 
 ## Building
 
@@ -54,8 +76,9 @@ This produces `build/homemonitor.rp6502` ready to run on your RP6502.
 
 ## Running
 
-1. Copy `build/homemonitor.rp6502` to your RP6502 storage (USB drive).
-2. From the RP6502 monitor, run:
+1. Copy **`build/homemonitor.rp6502`** to your USB drive.
+2. Copy **`feeds.txt`** to the same location on the USB drive.
+3. From the RP6502 monitor:
    ```
    load homemonitor.rp6502  
    reset  
@@ -92,29 +115,22 @@ FeedConfig feed_custom = {
 
 ## Technical Details
 
-- **Memory Management**: Uses a **16KB global buffer** (`BUFFER_SIZE`) to ensure full HTTP headers and RSS bodies are captured (Slashdot headers are large).
-- **Keyboard Mapping**: The keyboard state is mapped to XRAM address **0x8000**.
-  - *Note:* This address is chosen to avoid collisions with Video RAM (low memory) and the System Stack (high memory).
-- **ANSI Codes**: The program uses standard ANSI escape codes for screen clearing (`\x1b[2J`) and text coloring.
+- **Memory Management**: Uses a **16KB global buffer** to ensure full HTTP headers and RSS bodies are captured.
+- **Keyboard Mapping**: The keyboard state is mapped to XRAM address **0x8000** to avoid collisions with Video RAM and the System Stack.
+- **ANSI Codes**: Uses standard ANSI escape codes for screen clearing and text coloring.
+- **Word Wrapping**: Implements custom logic to handle 80-column wrapping and UTF-8 multibyte characters (Smart Quotes, Em Dashes).
 
 ## Troubleshooting
 
-### "Error: Modem not ready"
-- Ensure the `AT:` device is available.
-- Verify WiFi is configured (`STATUS`).
-
-### "Connection Failed" / "NO CARRIER"
-- Verify the hostname is reachable.
-- Try using an IP address instead of a hostname.
-- Ensure the server is listening on port 80.
-- **Note:** This program does not support HTTPS (SSL). It requires plain HTTP feeds.
-
-### Screen shows "Happy Faces" or Garbage
-- This indicates a memory collision. The keyboard XRAM address is likely overwriting Video Memory. Ensure `KEYBOARD_INPUT` is set to a safe address like `0x8000`.
+*   **"Error: Could not open feeds.txt"**: Ensure the file exists on the USB drive and is in the current directory.
+*   **"No RSS items found"**:
+    *   If using a direct link, the server might be forcing HTTPS. Use the Proxy.
+    *   Check your `StartTag` and `EndTag` in `feeds.txt`.
+*   **"Connection Failed"**:
+    *   Verify the IP address in `feeds.txt`.
+    *   If using the proxy, check that the firewall on the Pi allows port 8080.
 
 ## References
 
 - [RP6502-RIA-W Documentation](https://picocomputer.github.io/ria_w.html)
-- [RP6502-OS Documentation](https://picocomputer.github.io/os.html)
 - [WeeWX Weather Software](https://weewx.com/)
-```
