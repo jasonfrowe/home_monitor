@@ -38,7 +38,7 @@ class Console:
         if platform.system() == "Windows":
             return "COM1"
         elif platform.system() == "Darwin":
-            return "/dev/cu.usbmodem"
+            return "/dev/tty.usbmodem11401"
         elif platform.system() == "Linux":
             return "/dev/ttyACM0"
         else:
@@ -63,10 +63,10 @@ class Console:
         """Dispatch to the correct terminal emulator"""
         print("Console terminal. CTRL-A then B for break or X for exit.")
         # We also accept CTRL-A F and CTRL-A Q for minicom habits.
-        if "tty" in globals():
-            self.term_posix(cp)
-        else:
-            self.term_windows(cp)
+        # if "tty" in globals():
+        #     self.term_posix(cp)
+        # else:
+        #     self.term_windows(cp)
 
     def term_posix(self, cp: str):
         """POSIX terminal emulator for Linux, BSD, MacOS, etc."""
