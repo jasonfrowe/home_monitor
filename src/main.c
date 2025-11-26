@@ -18,6 +18,7 @@ char *strstr(const char *haystack, const char *needle);
 #define BUFFER_SIZE 8192
 #define UPDATE_INTERVAL_MIN 5
 #define TICKS_PER_MIN (60UL * CLOCKS_PER_SEC) 
+#define TIMEZONE_OFFSET -5      /* EST = -5, EDT = -4 */
 
 /* --- Keyboard / XRAM Configuration --- */
 #define KEYBOARD_INPUT  0xEC20  // XRAM address for keyboard data
@@ -206,6 +207,8 @@ static int fetch_data(void) {
 
     /* --- CAPTURE & FORMAT TIME --- */
     now = time(NULL);
+    /* Adjust UTC to Local Time manually */
+    now += (TIMEZONE_OFFSET * 3600);
     t = localtime(&now);
     /* Format: "Nov 25 22:30" */
     strftime(time_str, sizeof(time_str), "%b %d %H:%M", t);
