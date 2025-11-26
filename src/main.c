@@ -11,7 +11,7 @@ char *strstr(const char *haystack, const char *needle);
 #define RIA_OP_READ_XSTACK 0x0B
 #endif
 
-/* Increased to 8KB to ensure we get the XML body after headers */
+/* 8KB Buffer to fit Headers + XML Body */
 #define BUFFER_SIZE 8192
 
 static char g_buffer[BUFFER_SIZE];
@@ -35,7 +35,10 @@ static int modem_read_char(int fd, char* ch, unsigned long timeout)
     return 0;
 }
 
-/* Send string (Reversed for Stack LIFO) */
+/* 
+ * Send string (Reversed for Stack LIFO) 
+ * We push the LAST char first, so the FIRST char ends up on Top.
+ */
 static void modem_send(int fd, const char* str)
 {
     int len, i;
@@ -47,7 +50,11 @@ static void modem_send(int fd, const char* str)
     ria_call_int(RIA_OP_WRITE_XSTACK);
 }
 
-/* Bulk read */
+/* 
+ * FIXED: Bulk read 
+ * The Kernel puts the First Byte at the Top of the stack.
+ * We pop linearly (0 to count) to preserve order.
+ */
 static int modem_read(int fd, char* buf, int max_len, unsigned long timeout)
 {
     unsigned long start;
@@ -66,9 +73,15 @@ static int modem_read(int fd, char* buf, int max_len, unsigned long timeout)
         count = ria_call_int(RIA_OP_READ_XSTACK);
         
         if (count > 0) {
-            for (i = count - 1; i >= 0; i--) {
+            /* 
+             * Stack Top = First Byte.
+             * Pop directly into the temp buffer in order.
+             */
+            for (i = 0; i < count; i++) {
                 g_read_temp[i] = ria_pop_char();
             }
+            
+            /* Append to main buffer */
             for (i = 0; i < count; i++) {
                 buf[total++] = g_read_temp[i];
             }
@@ -123,7 +136,6 @@ static void fetch_weather_rss(void)
         g_temp[line_len] = '\0';
         
         if (line_len > 0) {
-            /* printf("M: %s\n", g_temp); */ /* Optional verbose log */
             if (strstr(g_temp, "CONNECT") != NULL) {
                 found_connect = g_temp;
                 break;
@@ -142,7 +154,6 @@ static void fetch_weather_rss(void)
 
     modem_send(fd, "GET /weewx/rss.xml HTTP/1.1\r\n");
     modem_send(fd, "Host: weatherpi.home.arpa\r\n");
-    /* Close is important so server terminates stream */
     modem_send(fd, "Connection: close\r\n\r\n");
     
     /* Read Response */
@@ -151,28 +162,11 @@ static void fetch_weather_rss(void)
     g_buffer[bytes_read] = '\0';
     
     printf("Received %d bytes.\n", bytes_read);
-    
-    /* --- DEBUG SECTION START --- */
-    printf("\n[DEBUG] Header info:\n");
-    /* Print first 100 chars to verify HTTP 200 OK */
-    for(n=0; n<100 && n<bytes_read; n++) {
-        char c = g_buffer[n];
-        /* Replace newlines with space for compact printing */
-        if (c == '\r' || c == '\n') putchar(' ');
-        else if (c >= 32 && c <= 126) putchar(c);
-        else putchar('.');
-    }
-    printf("\n[DEBUG] End Header info\n\n");
-    /* --- DEBUG SECTION END --- */
-
-    if (bytes_read >= BUFFER_SIZE - 1) {
-        printf("Warning: Buffer full. XML might be truncated.\n");
-    }
 
     /* Parse for description */
     printf("Parsing...\n");
     pos = 0;
-    n = 0; /* Count items found */
+    n = 0;
     
     while (pos < bytes_read) {
         tag_start = strstr(g_buffer + pos, "<description>");
@@ -191,16 +185,8 @@ static void fetch_weather_rss(void)
     
     if (n == 0) {
         printf("No <description> tags found.\n");
-        /* Check if we got a 404 or redirect by looking for Title */
-        tag_start = strstr(g_buffer, "<title>");
-        if (tag_start) {
-             tag_start += 7;
-             tag_end = strstr(tag_start, "</title>");
-             if(tag_end) {
-                 *tag_end = '\0';
-                 printf("Found page title instead: %s\n", tag_start);
-             }
-        }
+        /* Optional: Print start of buffer to debug if still failing */
+        printf("Buffer start: %.60s\n", g_buffer);
     }
     
     close(fd);
