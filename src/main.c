@@ -3,35 +3,110 @@
 #include <string.h>
 #include <fcntl.h>
 #include <time.h>
+#include <stdint.h>
 
-/* ANSI Color Codes */
-#define ANSI_RESET   "\x1b[0m"
-#define ANSI_BOLD    "\x1b[1m"
-#define ANSI_RED     "\x1b[31m"
-#define ANSI_GREEN   "\x1b[32m"
-#define ANSI_YELLOW  "\x1b[33m"
-#define ANSI_BLUE    "\x1b[34m"
-#define ANSI_MAGENTA "\x1b[35m"
-#define ANSI_CYAN    "\x1b[36m"
-#define ANSI_CLS     "\x1b[2J\x1b[H" /* Clear Screen + Home Cursor */
+#include <unistd.h>
 
-/* cc65 prototypes */
+/* cc65 needs explicit prototype for strstr */
 char *strstr(const char *haystack, const char *needle);
 
+#ifndef CLOCKS_PER_SEC
+#define CLOCKS_PER_SEC 60UL
+#endif
+
+/* --- Configuration --- */
+#define BUFFER_SIZE 8192
+#define UPDATE_INTERVAL_MIN 5
+#define TICKS_PER_MIN (60UL * CLOCKS_PER_SEC) 
+
+/* --- Keyboard / XRAM Configuration --- */
+#define KEYBOARD_INPUT  0xEC20  // XRAM address for keyboard data
+#define KEYBOARD_BYTES  32      // 32 bytes for 256 key states
+#define KEY_ESC 0x29   
+// Macro to check if a key is pressed
+#define key(code) (keystates[code >> 3] & (1 << (code & 7)))
+
+/* RIA Opcodes */
+#ifndef RIA_OP_READ_XRAM
+#define RIA_OP_READ_XRAM 0x06
+#endif
 #ifndef RIA_OP_READ_XSTACK
 #define RIA_OP_READ_XSTACK 0x0B
 #endif
 
-/* 8KB Buffer to fit Headers + XML Body */
-#define BUFFER_SIZE 8192
+/* --- ANSI Color Macros --- */
+#define ANSI_CLS        "\x1b[2J\x1b[H"
+#define ANSI_RESET      "\x1b[0m"
+#define ANSI_BOLD       "\x1b[1m"
+#define ANSI_CYAN       "\x1b[36m"
+#define ANSI_GREEN      "\x1b[32m"
+#define ANSI_YELLOW     "\x1b[33m"
+#define ANSI_WHITE      "\x1b[37m"
+#define ANSI_MAGENTA    "\x1b[35m"
 
+/* --- Globals --- */
 static char g_buffer[BUFFER_SIZE];
-static char g_temp[64];
 static char g_read_temp[256];
+static char g_temp_line[128];
+uint8_t keystates[KEYBOARD_BYTES] = {0};
 
-/* Read single char */
-static int modem_read_char(int fd, char* ch, unsigned long timeout)
-{
+static int is_entity(const char* p, const char* entity) {
+    return strncmp(p, entity, strlen(entity)) == 0;
+}
+
+static void print_pretty_line(const char* start, const char* end) {
+    const char* p = start;
+    int is_value = 0;
+    
+    /* Consume initial whitespace */
+    while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) {
+        p++;
+    }
+    if (p >= end) return;
+
+    printf(ANSI_CYAN);
+
+    while (p < end) {
+        if (*p == '&') {
+            if (is_entity(p, "&#176;")) {
+                printf(ANSI_YELLOW " deg " ANSI_CYAN);
+                if (is_value) printf(ANSI_BOLD ANSI_WHITE);
+                p += 6; continue;
+            }
+            if (is_entity(p, "&quot;")) { putchar('"'); p += 6; continue; }
+            if (is_entity(p, "&amp;"))  { putchar('&'); p += 5; continue; }
+            if (is_entity(p, "&lt;"))   { putchar('<'); p += 4; continue; }
+            if (is_entity(p, "&gt;"))   { putchar('>'); p += 4; continue; }
+        }
+
+        if (*p == ':' && !is_value) {
+            printf(":%s ", ANSI_RESET);
+            is_value = 1;
+            printf(ANSI_BOLD ANSI_WHITE);
+            p++;
+            continue;
+        }
+
+        if (*p == ';') {
+            printf(ANSI_RESET ";\n" ANSI_CYAN); 
+            is_value = 0;
+            p++;
+            /* Consume ALL whitespace after semicolon */
+            while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) {
+                p++;
+            }
+            continue;
+        }
+
+        if (*p != '\n' && *p != '\r') {
+            putchar(*p);
+        }
+        p++;
+    }
+    printf(ANSI_RESET "\n");
+}
+
+static int modem_read_char(int fd, char* ch, unsigned long timeout) {
     unsigned long start = clock();
     int count;
     while ((clock() - start) < timeout) {
@@ -46,237 +121,165 @@ static int modem_read_char(int fd, char* ch, unsigned long timeout)
     return 0;
 }
 
-/* 
- * Send string (Reversed for Stack LIFO) 
- * We push the LAST char first, so the FIRST char ends up on Top.
- */
-static void modem_send(int fd, const char* str)
-{
+static void modem_send(int fd, const char* str) {
     int len, i;
     len = strlen(str);
-    for (i = len - 1; i >= 0; i--) {
-        ria_push_char(str[i]);
-    }
+    for (i = len - 1; i >= 0; i--) ria_push_char(str[i]);
     ria_set_ax(fd);
     ria_call_int(RIA_OP_WRITE_XSTACK);
 }
 
-/* 
- * FIXED: Bulk read 
- * The Kernel puts the First Byte at the Top of the stack.
- * We pop linearly (0 to count) to preserve order.
- */
-static int modem_read(int fd, char* buf, int max_len, unsigned long timeout)
-{
-    unsigned long start;
-    int total, count, i;
-    int chunk;
-    
-    total = 0;
-    start = clock();
+static int modem_read_bulk(int fd, char* buf, int max_len, unsigned long timeout) {
+    unsigned long start = clock();
+    int total = 0;
+    int count, i, chunk;
     
     while (total < max_len && (clock() - start) < timeout) {
         chunk = max_len - total;
         if (chunk > 256) chunk = 256;
-        
         ria_push_int(chunk);
         ria_set_ax(fd);
         count = ria_call_int(RIA_OP_READ_XSTACK);
-        
         if (count > 0) {
-            /* 
-             * Stack Top = First Byte.
-             * Pop directly into the temp buffer in order.
-             */
-            for (i = 0; i < count; i++) {
-                g_read_temp[i] = ria_pop_char();
-            }
-            
-            /* Append to main buffer */
-            for (i = 0; i < count; i++) {
-                buf[total++] = g_read_temp[i];
-            }
-            start = clock(); /* Reset timeout on activity */
+            for (i = 0; i < count; i++) g_read_temp[i] = ria_pop_char();
+            for (i = 0; i < count; i++) buf[total++] = g_read_temp[i];
+            start = clock();
         }
     }
     return total;
 }
 
-static void print_clean(const char* str)
-{
-    const char* p = str;
-    int is_value = 0; /* 0 = Printing Label, 1 = Printing Value */
-    int new_line = 1;
-
-    /* Skip initial blank lines */
-    while (*p && (*p == '\n' || *p == '\r' || *p == ' ' || *p == '\t')) {
-        p++;
-    }
-
-    while (*p) {
-        /* Start of a new line: Reset color and assume Label */
-        if (new_line) {
-            /* Check for thematic keywords in the upcoming line */
-            if (strstr(p, "Rain") == p || strstr(p, "rain") == p) 
-                printf(ANSI_BLUE);
-            else if (strstr(p, "Wind") == p) 
-                printf(ANSI_CYAN);
-            else if (strstr(p, "temp") == p || strstr(p, "Temp") == p) 
-                printf(ANSI_YELLOW);
-            else 
-                printf(ANSI_BOLD ANSI_MAGENTA); /* Default Label Color */
-                
-            is_value = 0;
-            new_line = 0;
-        }
-
-        /* Decode HTML Degree Symbol */
-        if (strncmp(p, "&#176;", 6) == 0) {
-            printf("\xF8"); /* \xF8 is the standard degree symbol in many CP437/ISO fonts, or use " deg" */
-            p += 6;
-            continue;
-        }
-        
-        /* Handle Newlines */
-        if (*p == '\n') {
-            printf(ANSI_RESET "\n"); /* Reset color at end of line */
-            new_line = 1;
-            /* Skip leading indentation on next line */
-            while (p[1] == ' ' || p[1] == '\t') p++;
-        }
-        /* Handle the separator ':' */
-        else if (*p == ':' && !is_value) {
-            printf(":%s", ANSI_GREEN); /* Switch to Value Color (Green) */
-            is_value = 1;
-        }
-        /* Handle semicolon ';' which often separates values on one line */
-        else if (*p == ';') {
-            printf(ANSI_RESET ";\n"); /* Treat semicolon as a hard break for readability */
-            new_line = 1;
-             /* Skip space after semicolon if present */
-            while (p[1] == ' ') p++;
-        }
-        else {
-            putchar(*p);
-        }
-        p++;
-    }
-    printf(ANSI_RESET "\n");
-}
-
-static void fetch_weather_rss(void)
-{
+static int fetch_data(void) {
     int fd, bytes_read, pos;
     char *tag_start, *tag_end;
-    char* found_connect;
-    int line_len, n;
     unsigned long start;
-    
+    int line_len;
+    char ch;
+    int block_count = 0;
+
     fd = open("AT:", O_RDWR);
     if (fd < 0) {
-        printf("Error: Modem not found.\n");
-        return;
+        printf(ANSI_MAGENTA "Error: Modem not ready.\n" ANSI_RESET);
+        return 0;
     }
-    
-    printf("Modem connected.\n");
-    
-    /* Reset and Config */
-    modem_send(fd, "ATZ\r\n");
-    modem_read(fd, g_buffer, 256, 500); /* Drain */
-    
-    modem_send(fd, "ATE0\r\n");
-    modem_read(fd, g_buffer, 256, 500); /* Drain */
 
-    printf("Connecting to weatherpi.home.arpa:80...\n");
+    modem_send(fd, "ATZ\r\n");
+    modem_read_bulk(fd, g_buffer, 256, 200);
+    modem_send(fd, "ATE0\r\n");
+    modem_read_bulk(fd, g_buffer, 256, 200);
+
+    printf("Connecting...");
+    
     modem_send(fd, "ATDweatherpi.home.arpa:80\r\n");
 
-    /* Wait for CONNECT */
-    found_connect = NULL;
     start = clock();
     while ((clock() - start) < 5000) {
         line_len = 0;
         while (line_len < 63 && (clock() - start) < 5000) {
-            char ch;
-            n = modem_read_char(fd, &ch, 50);
-            if (n == 1) {
-                if (ch == '\n' || ch == '\r') {
-                    g_temp[line_len] = '\0';
-                    break;
-                }
-                g_temp[line_len++] = ch;
-            }
+             int res = modem_read_char(fd, &ch, 50);
+             if (res == 1) {
+                 if (ch == '\n' || ch == '\r') break;
+                 g_temp_line[line_len++] = ch;
+             }
         }
-        g_temp[line_len] = '\0';
-        
-        if (line_len > 0) {
-            if (strstr(g_temp, "CONNECT") != NULL) {
-                found_connect = g_temp;
-                break;
-            }
-            if (strstr(g_temp, "NO CARRIER") != NULL) break;
+        g_temp_line[line_len] = '\0';
+        if (strstr(g_temp_line, "CONNECT")) break;
+        if (strstr(g_temp_line, "NO CARRIER")) {
+            printf("\n" ANSI_MAGENTA "Connection Failed." ANSI_RESET "\n");
+            close(fd);
+            return 0;
         }
     }
 
-    if (found_connect == NULL) {
-        printf("Connection failed.\n");
-        close(fd);
-        return;
-    }
-
-    printf("Connected. Fetching RSS...\n");
-
+    printf("\rConnected. Downloading...         ");
+    
     modem_send(fd, "GET /weewx/rss.xml HTTP/1.1\r\n");
     modem_send(fd, "Host: weatherpi.home.arpa\r\n");
     modem_send(fd, "Connection: close\r\n\r\n");
-    
-    /* Read Response */
-    printf("Downloading...\n");
-    bytes_read = modem_read(fd, g_buffer, BUFFER_SIZE - 1, 3000);
-    g_buffer[bytes_read] = '\0';
-    
-    printf("Received %d bytes.\n", bytes_read);
 
-    /* Parse for description */
-    printf("Parsing...\n");
+    bytes_read = modem_read_bulk(fd, g_buffer, BUFFER_SIZE - 1, 3000);
+    g_buffer[bytes_read] = '\0';
+    close(fd);
+
+    printf(ANSI_CLS);
+    printf(ANSI_GREEN "WeatherPi Monitor" ANSI_RESET " (Last update: Now)\n");
+    printf("----------------------------------------\n\n");
+
     pos = 0;
-    n = 0;
-    
     while (pos < bytes_read) {
         tag_start = strstr(g_buffer + pos, "<description>");
-        if (tag_start == NULL) break;
-        
-        tag_start += 13; /* Len of <description> */
+        if (!tag_start) break;
+        tag_start += 13;
         tag_end = strstr(tag_start, "</description>");
-        if (tag_end == NULL) break;
+        if (!tag_end) break;
         
-        *tag_end = '\0';
-        // printf("- %s\n", tag_start);
-        print_clean(tag_start);
-        n++;
+        *tag_end = '\0'; /* Terminate string temporarily for processing */
         
-        pos = (int)(tag_end - g_buffer) + 14; 
+        /* --- FILTERING LOGIC --- */
+        
+        /* 1. Skip Channel Title (usually contains "summaries") */
+        if (strstr(tag_start, "summaries") != NULL) {
+            pos = (int)(tag_end - g_buffer) + 14;
+            continue;
+        }
+        
+        /* 2. Skip Monthly and Yearly summaries */
+        if (strstr(tag_start, "total for month") != NULL || 
+            strstr(tag_start, "total for year") != NULL) {
+            pos = (int)(tag_end - g_buffer) + 14;
+            continue;
+        }
+        
+        /* --- PRINTING --- */
+        
+        /* Optional: Add headers based on order found */
+        if (block_count == 0) printf(ANSI_YELLOW "CURRENT CONDITIONS:\n" ANSI_RESET);
+        else if (block_count == 1) printf(ANSI_YELLOW "\nDAILY SUMMARY:\n" ANSI_RESET);
+        
+        print_pretty_line(tag_start, tag_end);
+        printf("\n");
+        block_count++;
+        
+        pos = (int)(tag_end - g_buffer) + 14;
     }
-    
-    if (n == 0) {
-        printf("No <description> tags found.\n");
-        /* Optional: Print start of buffer to debug if still failing */
-        printf("Buffer start: %.60s\n", g_buffer);
-    }
-    
-    close(fd);
+
+    return 1;
 }
 
-void main(void)
-{
-    /* Clear screen and print Header */
+void main(void) {
+    unsigned long timer_start;
+    unsigned long next_update_ticks = UPDATE_INTERVAL_MIN * TICKS_PER_MIN;
+    uint8_t j;
+
+    // Enable keyboard input
+    xregn(0, 0, 0, 1, KEYBOARD_INPUT);
+
     printf(ANSI_CLS);
-    printf(ANSI_BOLD ANSI_CYAN "========================================\n");
-    printf("       RP6502 WEATHER STATION           \n");
-    printf("========================================\n" ANSI_RESET);
-    
-    fetch_weather_rss();
-    
-    printf(ANSI_BOLD ANSI_CYAN "\n========================================\n");
-    printf("               DONE.                    \n");
-    printf("========================================\n" ANSI_RESET);
+    printf("Initializing Weather Monitor...\n\n");
+
+    j = 1;
+    while(j == 1) {
+        fetch_data();
+
+        printf(ANSI_YELLOW "\nNext update in %d minutes.\n", UPDATE_INTERVAL_MIN);
+        printf("Press ESC to exit.\n" ANSI_RESET);
+
+        timer_start = clock();
+        while ((clock() - timer_start) < next_update_ticks) {
+            // Read all keyboard state bytes
+            uint8_t i;
+            RIA.addr0 = KEYBOARD_INPUT;
+            RIA.step0 = 1;
+            for (i = 0; i < KEYBOARD_BYTES; i++) {
+                keystates[i] = RIA.rw0;
+            }
+
+            // Check for ESC key to exit
+            if (key(KEY_ESC)) {
+                printf("Exiting ...\n");
+                j = 0;
+                break;
+            }
+        }
+    }
 }
