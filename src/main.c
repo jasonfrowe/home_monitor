@@ -91,6 +91,37 @@ static int modem_read(int fd, char* buf, int max_len, unsigned long timeout)
     return total;
 }
 
+static void print_clean(const char* str)
+{
+    const char* p = str;
+    
+    /* Skip initial blank lines or whitespace */
+    while (*p && (*p == '\n' || *p == '\r' || *p == ' ' || *p == '\t')) {
+        p++;
+    }
+
+    while (*p) {
+        /* Detect Degree Symbol HTML Entity */
+        if (strncmp(p, "&#176;", 6) == 0) {
+            printf(" deg");
+            p += 6; 
+        }
+        /* Detect newlines to clean up indentation of subsequent lines */
+        else if (*p == '\n') {
+            putchar('\n');
+            /* Eat all spaces/tabs immediately following a newline */
+            while (p[1] == ' ' || p[1] == '\t') {
+                p++;
+            }
+        }
+        else {
+            putchar(*p);
+        }
+        p++;
+    }
+    printf("\n\n");
+}
+
 static void fetch_weather_rss(void)
 {
     int fd, bytes_read, pos;
@@ -177,7 +208,8 @@ static void fetch_weather_rss(void)
         if (tag_end == NULL) break;
         
         *tag_end = '\0';
-        printf("- %s\n", tag_start);
+        // printf("- %s\n", tag_start);
+        print_clean(tag_start);
         n++;
         
         pos = (int)(tag_end - g_buffer) + 14; 
