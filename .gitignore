@@ -2,3 +2,5 @@ __pycache__
 /.rp6502
 /build
 .DS_Store
+/feeds_local.txt
+tools/rp6502.py.bak

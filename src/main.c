@@ -29,11 +29,6 @@ char *strstr(const char *haystack, const char *needle);
 #define KEYBOARD_BYTES  32      // 32 bytes for 256 key states
 #define KEY_ESC         0x29   
 #define KEY_ENTER       0x28    
-#define KEY_1           0x1E    /* '1' on main row */
-#define KEY_2           0x1F    /* '2' on main row */
-#define KEY_3           0x20    /* '3' on main row */
-#define KEY_4           0x21    /* '4' on main row */
-#define KEY_5           0x22    /* '5' on main row */
 
 // Macro to check if a key is pressed
 #define key(code) (keystates[code >> 3] & (1 << (code & 7)))
@@ -522,7 +517,7 @@ static int fetch_data(void) {
         /* News Logic */
         else {
             printf(ANSI_YELLOW "* ");
-            print_pretty_line(tag_start, tag_end, 2000, ANSI_YELLOW, &total_lines_printed, 2, 0);
+            print_pretty_line(tag_start, tag_end, 2000, ANSI_CYAN, &total_lines_printed, 2, 0);
 
             {
                 char *desc_start = strstr(tag_end + 1, "<description>");
@@ -532,7 +527,7 @@ static int fetch_data(void) {
                         *desc_end = '\0';
                         if (total_lines_printed < MAX_SCREEN_LINES) {
                             printf("  "); 
-                            print_pretty_line(desc_start + 13, desc_end, 250, ANSI_CYAN, &total_lines_printed, 2, 0); 
+                            print_pretty_line(desc_start + 13, desc_end, 250, ANSI_WHITE, &total_lines_printed, 2, 0); 
                         }
                         *desc_end = '<'; 
                     }
@@ -581,8 +576,8 @@ void main(void) {
         
         /* Dynamic Menu based on loaded feeds */
         for(i=0; i<feed_count && i<9; i++) {
-            printf("[%d] %s  ", i+1, feeds[i].name);
-            if ((i+1)%4 == 0) printf("\n");
+            /* [%d] %.4s means: print number, then truncate name to 4 chars */
+            printf("[%d] %.4s ", i+1, feeds[i].name);
         }
         printf("[ESC] Exit\n" ANSI_RESET);
 
