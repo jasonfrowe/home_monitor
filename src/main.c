@@ -385,7 +385,7 @@ static int fetch_data(void) {
         else {
             printf(ANSI_YELLOW "* ");
             /* Title: Indent 2, No semicolons */
-            print_pretty_line(tag_start, tag_end, 2000, ANSI_YELLOW, &total_lines_printed, 2, 0);
+            print_pretty_line(tag_start, tag_end, 2000, ANSI_CYAN, &total_lines_printed, 2, 0);
 
             /* Description */
             {
@@ -397,7 +397,7 @@ static int fetch_data(void) {
                         if (total_lines_printed < MAX_SCREEN_LINES) {
                             printf("  "); 
                             /* Description: Indent 2, Cyan, Max 250 chars */
-                            print_pretty_line(desc_start + 13, desc_end, 250, ANSI_CYAN, &total_lines_printed, 2, 0); 
+                            print_pretty_line(desc_start + 13, desc_end, 250, ANSI_WHITE, &total_lines_printed, 2, 0); 
                         }
                         *desc_end = '<'; 
                     }
