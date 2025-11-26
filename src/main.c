@@ -4,6 +4,17 @@
 #include <fcntl.h>
 #include <time.h>
 
+/* ANSI Color Codes */
+#define ANSI_RESET   "\x1b[0m"
+#define ANSI_BOLD    "\x1b[1m"
+#define ANSI_RED     "\x1b[31m"
+#define ANSI_GREEN   "\x1b[32m"
+#define ANSI_YELLOW  "\x1b[33m"
+#define ANSI_BLUE    "\x1b[34m"
+#define ANSI_MAGENTA "\x1b[35m"
+#define ANSI_CYAN    "\x1b[36m"
+#define ANSI_CLS     "\x1b[2J\x1b[H" /* Clear Screen + Home Cursor */
+
 /* cc65 prototypes */
 char *strstr(const char *haystack, const char *needle);
 
@@ -94,32 +105,63 @@ static int modem_read(int fd, char* buf, int max_len, unsigned long timeout)
 static void print_clean(const char* str)
 {
     const char* p = str;
-    
-    /* Skip initial blank lines or whitespace */
+    int is_value = 0; /* 0 = Printing Label, 1 = Printing Value */
+    int new_line = 1;
+
+    /* Skip initial blank lines */
     while (*p && (*p == '\n' || *p == '\r' || *p == ' ' || *p == '\t')) {
         p++;
     }
 
     while (*p) {
-        /* Detect Degree Symbol HTML Entity */
-        if (strncmp(p, "&#176;", 6) == 0) {
-            printf(" deg");
-            p += 6; 
+        /* Start of a new line: Reset color and assume Label */
+        if (new_line) {
+            /* Check for thematic keywords in the upcoming line */
+            if (strstr(p, "Rain") == p || strstr(p, "rain") == p) 
+                printf(ANSI_BLUE);
+            else if (strstr(p, "Wind") == p) 
+                printf(ANSI_CYAN);
+            else if (strstr(p, "temp") == p || strstr(p, "Temp") == p) 
+                printf(ANSI_YELLOW);
+            else 
+                printf(ANSI_BOLD ANSI_MAGENTA); /* Default Label Color */
+                
+            is_value = 0;
+            new_line = 0;
         }
-        /* Detect newlines to clean up indentation of subsequent lines */
-        else if (*p == '\n') {
-            putchar('\n');
-            /* Eat all spaces/tabs immediately following a newline */
-            while (p[1] == ' ' || p[1] == '\t') {
-                p++;
-            }
+
+        /* Decode HTML Degree Symbol */
+        if (strncmp(p, "&#176;", 6) == 0) {
+            printf("\xF8"); /* \xF8 is the standard degree symbol in many CP437/ISO fonts, or use " deg" */
+            p += 6;
+            continue;
+        }
+        
+        /* Handle Newlines */
+        if (*p == '\n') {
+            printf(ANSI_RESET "\n"); /* Reset color at end of line */
+            new_line = 1;
+            /* Skip leading indentation on next line */
+            while (p[1] == ' ' || p[1] == '\t') p++;
+        }
+        /* Handle the separator ':' */
+        else if (*p == ':' && !is_value) {
+            printf(":%s", ANSI_GREEN); /* Switch to Value Color (Green) */
+            is_value = 1;
+        }
+        /* Handle semicolon ';' which often separates values on one line */
+        else if (*p == ';') {
+            printf(ANSI_RESET ";\n"); /* Treat semicolon as a hard break for readability */
+            new_line = 1;
+             /* Skip space after semicolon if present */
+            while (p[1] == ' ') p++;
         }
         else {
             putchar(*p);
         }
         p++;
     }
-    printf("\n\n");
+    printf(ANSI_RESET "\n");
 }
 
 static void fetch_weather_rss(void)
@@ -226,7 +268,15 @@ static void fetch_weather_rss(void)
 
 void main(void)
 {
-    printf("\nWeather Monitor\n");
+    /* Clear screen and print Header */
+    printf(ANSI_CLS);
+    printf(ANSI_BOLD ANSI_CYAN "========================================\n");
+    printf("       RP6502 WEATHER STATION           \n");
+    printf("========================================\n" ANSI_RESET);
+    
     fetch_weather_rss();
-    printf("\nDone.\n");
+    
+    printf(ANSI_BOLD ANSI_CYAN "\n========================================\n");
+    printf("               DONE.                    \n");
+    printf("========================================\n" ANSI_RESET);
 }
