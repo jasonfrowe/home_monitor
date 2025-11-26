@@ -19,6 +19,8 @@ char *strstr(const char *haystack, const char *needle);
 #define UPDATE_INTERVAL_MIN 5
 #define TICKS_PER_MIN (60UL * CLOCKS_PER_SEC) 
 #define TIMEZONE_OFFSET -5      /* EST = -5, EDT = -4 */
+#define SCREEN_WIDTH    80
+#define MAX_SCREEN_LINES 22     /* Stop printing after this many lines to prevent scrolling */
 
 /* --- Keyboard / XRAM Configuration --- */
 #define KEYBOARD_INPUT  0xEC20  // XRAM address for keyboard data
@@ -83,11 +85,45 @@ FeedConfig feed_news    = { 1, "Slashdot",  "rss.slashdot.org",    "80", "/Slash
 /* Current Selection (Default to Weather) */
 FeedConfig current_feed;
 
-static void print_pretty_line(const char* start, const char* end, int max_chars, const char* color) {
+/* 
+ * Calculate the visual length of the next word in the buffer 
+ * Handles HTML entity lengths (e.g., &quot; is 1 char)
+ */
+static int get_next_word_len(const char* p, const char* end) {
+    int len = 0;
+    int in_tag = 0;
+    const char* t = p;
+    
+    while (t < end) {
+        /* Stop at space (word boundary) unless inside a tag */
+        if (!in_tag && (*t == ' ' || *t == '\n' || *t == '\r' || *t == '\t')) break;
+        
+        if (*t == '<') { in_tag = 1; t++; continue; }
+        if (*t == '>') { in_tag = 0; t++; continue; }
+        if (in_tag) { t++; continue; }
+        
+        if (*t == '&') {
+            if (is_entity(t, "&#176;")) { len += 5; t += 6; continue; } /* " deg " */
+            if (is_entity(t, "&quot;")) { len += 1; t += 6; continue; }
+            if (is_entity(t, "&amp;"))  { len += 1; t += 5; continue; }
+            if (is_entity(t, "&lt;"))   { len += 1; t += 4; continue; }
+            if (is_entity(t, "&gt;"))   { len += 1; t += 4; continue; }
+        }
+        
+        len++;
+        t++;
+    }
+    return len;
+}
+
+static void print_pretty_line(const char* start, const char* end, int max_chars, const char* color, int* current_line, int indent, int is_weather) {
     const char* p = start;
     int is_value = 0;
     int in_tag = 0; 
     int chars_printed = 0;
+    int col = indent; /* Assume we started at this column (caller printed prefix) */
+    int word_len = 0;
+    int i;
 
     /* Consume initial whitespace */
     while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) {
@@ -95,62 +131,94 @@ static void print_pretty_line(const char* start, const char* end, int max_chars,
     }
     if (p >= end) return;
 
-    /* Set the requested base color */
     printf("%s", color);
 
     while (p < end) {
+        if (*current_line >= MAX_SCREEN_LINES) return;
         if (max_chars > 0 && chars_printed >= max_chars) {
             printf(ANSI_RESET "...");
             break;
         }
 
-        /* Handle HTML Tags (Strip them) */
+        /* Handle Tags (Invisible) */
         if (*p == '<') { in_tag = 1; p++; continue; }
         if (*p == '>') { in_tag = 0; p++; continue; }
         if (in_tag) { p++; continue; }
 
-        /* Handle HTML Entities */
-        if (*p == '&') {
-            if (is_entity(p, "&#176;")) {
-                /* Use passed 'color' to revert after highlighting degree symbol */
-                printf(ANSI_YELLOW " deg %s", color);
-                if (is_value) printf(ANSI_BOLD ANSI_WHITE);
-                p += 6; chars_printed++; continue;
+        /* Handle Whitespace */
+        if (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') {
+            if (col < SCREEN_WIDTH) {
+                putchar(' ');
+                col++;
             }
-            if (is_entity(p, "&quot;")) { putchar('"'); p += 6; chars_printed++; continue; }
-            if (is_entity(p, "&amp;"))  { putchar('&'); p += 5; chars_printed++; continue; }
-            if (is_entity(p, "&lt;"))   { putchar('<'); p += 4; chars_printed++; continue; }
-            if (is_entity(p, "&gt;"))   { putchar('>'); p += 4; chars_printed++; continue; }
-        }
-
-        /* Logic for Key: Value coloring (Weather) */
-        if (*p == ':' && !is_value) {
-            printf(":%s ", ANSI_RESET);
-            is_value = 1;
-            printf(ANSI_BOLD ANSI_WHITE);
-            p++; chars_printed++;
+            p++;
             continue;
         }
 
-        /* Logic for semicolons (Newlines) */
-        if (*p == ';') {
-            /* Reset, newline, then re-apply base color */
-            printf(ANSI_RESET ";\n%s", color); 
-            is_value = 0;
-            p++; chars_printed++;
-            while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) {
-                p++;
-            }
-            continue;
+        /* Start of a word? Check if it fits. */
+        word_len = get_next_word_len(p, end);
+        
+        if (col + word_len > SCREEN_WIDTH) {
+            /* Wrap */
+            printf("\n");
+            (*current_line)++;
+            if (*current_line >= MAX_SCREEN_LINES) return;
+            
+            /* Indent next line */
+            for(i=0; i<indent; i++) putchar(' ');
+            col = indent;
+            
+            /* Re-apply color after newline */
+            printf("%s", color);
         }
 
-        if (*p != '\n' && *p != '\r') {
+        /* Print the word characters */
+        while (p < end && !(*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) {
+             if (*p == '<') { /* Tag start mid-word? stop word processing to let main loop handle tag */ break; }
+             
+             /* Entities */
+             if (*p == '&') {
+                if (is_entity(p, "&#176;")) {
+                    printf(ANSI_YELLOW " deg %s", color);
+                    if (is_value) printf(ANSI_BOLD ANSI_WHITE);
+                    p += 6; chars_printed++; col+=5; continue;
+                }
+                if (is_entity(p, "&quot;")) { putchar('"'); p += 6; chars_printed++; col++; continue; }
+                if (is_entity(p, "&amp;"))  { putchar('&'); p += 5; chars_printed++; col++; continue; }
+                if (is_entity(p, "&lt;"))   { putchar('<'); p += 4; chars_printed++; col++; continue; }
+                if (is_entity(p, "&gt;"))   { putchar('>'); p += 4; chars_printed++; col++; continue; }
+            }
+
+            /* Weather Semicolons */
+            if (is_weather && *p == ';') {
+                printf(ANSI_RESET ";\n%s", color); 
+                (*current_line)++;
+                is_value = 0;
+                p++; chars_printed++;
+                col = 0; /* Weather lines restart at 0 */
+                /* Skip spaces after semi */
+                while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) p++;
+                /* break inner loop to re-eval context */
+                break; 
+            }
+
+            /* Weather Colons */
+            if (is_weather && *p == ':' && !is_value) {
+                printf(":%s ", ANSI_RESET);
+                is_value = 1;
+                printf(ANSI_BOLD ANSI_WHITE);
+                p++; chars_printed++; col += 2;
+                continue;
+            }
+
             putchar(*p);
+            p++;
+            col++;
             chars_printed++;
         }
-        p++;
     }
     printf(ANSI_RESET "\n");
+    (*current_line)++;
 }
 
 static int modem_read_char(int fd, char* ch, unsigned long timeout) {
@@ -204,8 +272,8 @@ static int fetch_data(void) {
     char ch;
     int block_count = 0;
     int items_found = 0; 
-    int tag_len;
-    int end_tag_len;
+    int tag_len, end_tag_len;
+    int total_lines_printed = 4; /* Header takes ~4 lines */
     
     time_t now;
     struct tm *t;
@@ -267,7 +335,6 @@ static int fetch_data(void) {
     
     modem_send(fd, "Connection: close\r\n\r\n");
 
-    /* FAST DOWNLOAD */
     bytes_read = modem_read_bulk(fd, g_buffer, BUFFER_SIZE - 1, 3000);
     g_buffer[bytes_read] = '\0';
     close(fd);
@@ -283,6 +350,8 @@ static int fetch_data(void) {
 
     pos = 0;
     while (pos < bytes_read) {
+        if (total_lines_printed >= MAX_SCREEN_LINES) break;
+
         tag_start = strstr(g_buffer + pos, current_feed.tag);
         if (!tag_start) break;
         
@@ -298,7 +367,7 @@ static int fetch_data(void) {
             continue;
         }
 
-        /* Weather Filtering */
+        /* Weather Logic */
         if (current_feed.id == 0) {
             if (strstr(tag_start, "summaries") != NULL ||
                 strstr(tag_start, "total for month") != NULL || 
@@ -306,36 +375,40 @@ static int fetch_data(void) {
                 pos = (int)(tag_end - g_buffer) + end_tag_len;
                 continue;
             }
-            if (block_count == 0) printf(ANSI_YELLOW "CURRENT CONDITIONS:\n" ANSI_RESET);
-            else if (block_count == 1) printf(ANSI_YELLOW "\nDAILY SUMMARY:\n" ANSI_RESET);
+            if (block_count == 0) { printf(ANSI_YELLOW "CURRENT CONDITIONS:\n" ANSI_RESET); total_lines_printed++; }
+            else if (block_count == 1) { printf(ANSI_YELLOW "\nDAILY SUMMARY:\n" ANSI_RESET); total_lines_printed+=2; }
             
-            /* Weather: Cyan by default */
-            print_pretty_line(tag_start, tag_end, 2000, ANSI_CYAN); 
+            /* Weather indent 0, ; is newline */
+            print_pretty_line(tag_start, tag_end, 2000, ANSI_CYAN, &total_lines_printed, 0, 1); 
         } 
+        /* News Logic */
         else {
-            /* News Filtering */
-            
-            /* Title: Yellow */
             printf(ANSI_YELLOW "* ");
-            print_pretty_line(tag_start, tag_end, 2000, ANSI_CYAN);
+            /* Title: Indent 2, No semicolons */
+            print_pretty_line(tag_start, tag_end, 2000, ANSI_YELLOW, &total_lines_printed, 2, 0);
 
-            /* Description: Cyan */
+            /* Description */
             {
                 char *desc_start = strstr(tag_end + 1, "<description>");
                 if (desc_start && (desc_start - tag_end < 500)) {
                     char *desc_end = strstr(desc_start, "</description>");
                     if (desc_end) {
                         *desc_end = '\0';
-                        printf("  "); 
-                        /* Pass ANSI_CYAN for the description body */
-                        print_pretty_line(desc_start + 13, desc_end, 250, ANSI_WHITE); 
+                        if (total_lines_printed < MAX_SCREEN_LINES) {
+                            printf("  "); 
+                            /* Description: Indent 2, Cyan, Max 250 chars */
+                            print_pretty_line(desc_start + 13, desc_end, 250, ANSI_CYAN, &total_lines_printed, 2, 0); 
+                        }
                         *desc_end = '<'; 
                     }
                 }
             }
         }
         
-        printf("\n");
+        if (current_feed.id != 0) {
+            printf("\n");
+            total_lines_printed++;
+        }
         
         block_count++;
         items_found++;
@@ -344,20 +417,12 @@ static int fetch_data(void) {
     }
 
     if (items_found == 0) {
-        printf(ANSI_RED "No RSS items found.\n");
-        printf("Possible HTTPS redirect or format error.\n\n" ANSI_RESET);
-        printf(ANSI_WHITE "Server Response (First 150 chars):\n" ANSI_RESET);
-        for(pos = 0; pos < 150 && pos < bytes_read; pos++) {
-            char c = g_buffer[pos];
-            if(c >= 32 && c <= 126) putchar(c);
-            else if (c == '\n') putchar('\n');
-            else putchar('.');
-        }
-        printf("\n");
+        printf(ANSI_RED "No RSS items found.\n" ANSI_RESET);
     }
 
     return 1;
 }
+
 
 void main(void) {
     unsigned long timer_start;
