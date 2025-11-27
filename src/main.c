@@ -551,6 +551,7 @@ void main(void) {
     int running = 1;
     int force_reload = 0;
     int current_idx = 0;
+    int next_idx = 0;
     int i;
 
     /* Initialize Keyboard */
@@ -572,7 +573,9 @@ void main(void) {
     while (running) {
         fetch_data();
 
-        printf(ANSI_YELLOW "\nNext update in %d minutes.\n", UPDATE_INTERVAL_MIN);
+        next_idx = current_idx + 1;
+        if (next_idx >= feed_count) next_idx = 0;
+        printf(ANSI_YELLOW "\nNext update in %d minutes. Next up %s...\n", UPDATE_INTERVAL_MIN, feeds[next_idx].name);
         
         /* Dynamic Menu based on loaded feeds */
         for(i=0; i<feed_count && i<9; i++) {
